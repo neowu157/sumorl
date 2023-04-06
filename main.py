@@ -1,26 +1,74 @@
 import sys
-import sumo_rl
 import os
-import traci
-
+import gymnasium as gym
+import numpy as np
 from stable_baselines3.dqn.dqn import DQN
-from stable_baselines3.common.vec_env import VecFrameStack
-from stable_baselines3.common.evaluation import evaluate_policy
 from sumo_rl import SumoEnvironment
+import datetime
+from visualization import Visualization
+from utility import import_train_configuration, set_sumo, set_train_path
 
 
-env = SumoEnvironment(
-    net_file='environment.net.xml',
-    route_file='episode_routes.rou.xml',
-    out_csv_name="outputs/2way-single-intersection/dqn",
-    single_agent=True,
-    use_gui=False,
-    num_seconds=100000,
+class CustomWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.total_neg_reward = 0
+        self.sum_queue_length = 0
+        self.sum_waiting_time = 0
+        self.sum_speed = 0
+
+    def reset(self, **kwargs):
+        self.total_neg_reward = 0
+        self.sum_queue_length = 0
+        self.sum_waiting_time = 0
+        self.sum_speed = 0
+        return self.env.reset(**kwargs)
+
+    def step(self, action):
+
+        observation, rewards, terminated, truncated, info = self.env.step(action)
+
+        if rewards < 0:
+            self.total_neg_reward += (rewards*100)    #plotreward
+
+        self.sum_queue_length += info['system_total_stopped'] #vehicle speed is below 0.1 m/s
+        self.sum_waiting_time += info['system_total_stopped'] # for every stopped car +1s per 1 step  plotdelay
+
+        vehicles = self.sumo.vehicle.getIDList()
+        speeds = [self.sumo.vehicle.getSpeed(vehicle) for vehicle in vehicles]
+        self.sum_speed  += np.sum(speeds)
+
+
+        print(info['step'],rewards)
+        if info['step']== 7200:
+            print(self.total_neg_reward)           #plotreward  update every 5 step
+            print(self.sum_waiting_time)    #plotdelay
+            print(self.sum_queue_length/7200)  #plotqueue
+            print(self.sum_speed/7200)   #plotspeed
+
+        return observation, rewards, terminated, truncated, info
+
+timestamp_start = datetime.datetime.now()
+
+path = set_train_path('models')
+
+Visualization = Visualization(
+    path,
+    dpi=96
 )
 
+env = gym.make('sumo-rl-v0',
+    net_file='environment.net.xml',
+    route_file='episode_routes.rou.xml',
+    out_csv_name="outputs/dqn",
+    single_agent=True,
+    use_gui=True,
+    num_seconds=7200,
+)
+env = CustomWrapper(env)
 
-save_path = os.path.join('Training', 'Saved Models')
-log_path = os.path.join('Training', 'Logs')
+
+#save_path = os.path.join('Saved Models')
 
 
 model = DQN(
@@ -32,10 +80,14 @@ model = DQN(
     target_update_interval=500,
     exploration_initial_eps=0.05,
     exploration_final_eps=0.01,
-    verbose=1,
-    tensorboard_log=log_path
+    verbose=1
 )
 
-model.learn(total_timesteps=10)
-model.save(save_path)
-print('finish');
+print(model.policy)
+
+model.learn(total_timesteps=1500,progress_bar=True)
+#model.save(path)
+
+print("\n----- Start time:", timestamp_start)
+print("----- End time:", datetime.datetime.now())
+print("----- Session info saved at:", path)
